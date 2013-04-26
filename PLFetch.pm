@@ -1,8 +1,8 @@
 #!/usr/bin/env perl
 
-package PlFetch;
+package PLFetch;
 
-my $VERSION = "0.1.4";
+my $VERSION = "0.1.5";
 
 use strict;
 use warnings;
@@ -19,7 +19,6 @@ sub new {
     my $self = {
         quiet => undef,
         parallel => 3,
-        observer => 0,
         path => '.',
         url_info_cache => {},
         refresh_rate => 0.5,
@@ -187,11 +186,12 @@ sub fetch {
     my $worker_thread = threads->create( sub { $self->_fetch($url, $file) } );
     my $refresh_rate = $self->{refresh_rate} // 0.5;
     my $start = time;
+    my $max_width = 20;
 
     # initialization
     my $counter = 1;
     while (!-e $file || !-s $file) {
-        $self->_print('starting ' . '-' x $counter . '=' . '-' x (10 - $counter));
+        $self->_print('starting ' . '.' x $counter . '~' . '.' x (10 - $counter));
         $counter = 1 if ++$counter > 10;
         sleep($refresh_rate / 10);
         $self->_print("\r");
@@ -203,6 +203,7 @@ sub fetch {
     }
 
     # progress
+    $counter = 1;
     my $total = $info->{size} // 0;
     while (1) {
         my $size = -s $file // 0;
@@ -215,14 +216,16 @@ sub fetch {
 
         $self->_print(
             sprintf(
-                "\r[%d KB - %s%% - elapsed: %.2f]",
-                ($size / 1024),
-                ($percent ? sprintf("%.2f", $percent) : '?'),
+                "\r[elapsed % 4.2f - %5dKB] %s",
                 (time - $start),
+                ($size / 1024),
+                ($percent ? sprintf("% 2.2f%% ", $percent) : ''),
             )
         );
 
         if ($total) {
+            $counter = int($size / $total) * $max_width;
+            $self->_print('[' . ('|' x $counter) . ('-' x ($max_width - $counter)) . ']');
             last if ( $size >= $total);
             if (!$worker_thread->is_running) {
                 $worker_thread->join if $worker_thread->is_joinable;
@@ -230,6 +233,9 @@ sub fetch {
             }
         } elsif (!$worker_thread->is_running) {
             last;
+        } else {
+            $self->_print('[' . ('-' x $counter) . '=' . ('-' x ($max_width - $counter)) . ']');
+            $counter = 1 if ++$counter > $max_width;
         }
         sleep($refresh_rate);
     }
