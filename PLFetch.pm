@@ -183,50 +183,54 @@ sub fetch {
         $file = $info->{filename} // $self->_filename_from_url($url);
     }
     $file = $self->_make_local_filename($file);
-    my $th = threads->create( sub { $self->_fetch($url, $file) } );
-    my $rf_rate = $self->{refresh_rate} // 0.5;
+
+    my $worker_thread = threads->create( sub { $self->_fetch($url, $file) } );
+    my $refresh_rate = $self->{refresh_rate} // 0.5;
     my $start = time;
-    while (1) {
-        if (!-f $file || !-s $file) {
-            $self->_print('...');
-            sleep($rf_rate);
-            if ($th->is_running) {
-                $self->_print("\r");
-                next;
-            } elsif (time - $start > 120) {
-                croak("failed to start fetching '$url'");
-            }
-        }
+
+    # initialization
+    while (!-e $file || !-s $file) {
+        $self->_print('starting ...');
+        sleep($refresh_rate);
         $self->_print("\r");
+        if (time - $start > 60) {
+            $worker_thread->join if $worker_thread->is_joinable;
+            croak("failed to start fetching '$url'");
+        }
+    }
+
+    # progress
+    my $total = $info->{size} // 0;
+    while (1) {
         my $size = -s $file // 0;
         my $percent;
-        if ($info->{size} && $size) {
-            $percent = 100 * $size / $info->{size};
+        if ($total) {
+            $percent = 100 * $size / $total;
         } else {
             $percent = undef;
         }
+
         $self->_print(
             sprintf(
-                "[%d KB - %s%% - elapsed: %.2f]",
+                "\r[%d KB - %s%% - elapsed: %.2f]",
                 ($size / 1024),
                 ($percent ? sprintf("%.2f", $percent) : '?'),
                 (time - $start),
             )
         );
 
-        if ($percent) {
-            if ($size >= $info->{size}) {
-                last;
-            } elsif (!$th->is_running) {
-                $th->join if $th->is_joinable;
+        if ($total) {
+            last if ( $size >= $total);
+            if (!$worker_thread->is_running) {
+                $worker_thread->join if $worker_thread->is_joinable;
                 croak("failed to fetch '$url'. worker thread exited unexpectedly!");
             }
-        } elsif (!$th->is_running) {
+        } elsif (!$worker_thread->is_running) {
             last;
         }
-        sleep($rf_rate);
+        sleep($refresh_rate);
     }
-    $th->join if $th->is_joinable;
+    $worker_thread->join if $worker_thread->is_joinable;
     $self->_print("\nfetched '$url' to '$file'\n");
     return $file;
 }
