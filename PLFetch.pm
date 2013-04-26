@@ -2,7 +2,7 @@
 
 package PlFetch;
 
-my $VERSION = "0.1.3";
+my $VERSION = "0.1.4";
 
 use strict;
 use warnings;
@@ -189,10 +189,13 @@ sub fetch {
     my $start = time;
 
     # initialization
+    my $counter = 1;
     while (!-e $file || !-s $file) {
-        $self->_print('starting ...');
-        sleep($refresh_rate);
+        $self->_print('starting ' . '-' x $counter . '=' . '-' x (10 - $counter));
+        $counter = 1 if ++$counter > 10;
+        sleep($refresh_rate / 10);
         $self->_print("\r");
+        sleep($refresh_rate / 10);
         if (time - $start > 60) {
             $worker_thread->join if $worker_thread->is_joinable;
             croak("failed to start fetching '$url'");
