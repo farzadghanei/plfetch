@@ -182,6 +182,35 @@ sub _fetch {
     return $file;
 }
 
+sub _make_progressbar {
+    my ($self, $start, $size, $total, $counter, $max_width) = @_;
+    $start //= 0;
+    $size //= 0;
+    $total //= 0;
+    $counter //= 0;
+    $max_width //= 30;
+    my @buff;
+    if ($total) {
+        my $ratio = $size / $total;
+        $counter = int($max_width * $ratio);
+        push @buff, sprintf('% 2.2f%% ', 100 * $ratio);
+        push @buff, ('[' . ('#' x $counter) . ('-' x ($max_width - $counter)) . ']');
+    } else {
+        push @buff, ( '--.--% ' );
+        push @buff, ('[' . ('-' x $counter) . '#' . ('-' x ($max_width - $counter)) . ']');
+    }
+
+    push @buff, (
+        sprintf(
+            "%6dKB %3.2fKBs %4.2fs",
+            ($size / 1024),
+            ($size / 1024 / (time - $start)),
+            time - $start,
+        )
+    );
+    return join('', @buff);
+}
+
 sub fetch {
     my ($self, $url, $file) = @_;
     confess("no URL specified!") if !$url;
@@ -203,48 +232,28 @@ sub fetch {
     while (1) {
         my $size = 0;
         if (!-f $file || !-s $file) {
-            $self->_print("\rstarting ...");
             if (time - $last_size_check > 60) {
                 croak("failed to fetch '$url'. timedout!");
             }
-            next;
         } else {
             $last_size_check = time;
             $size = -s $file // 0;
         }
-        my $percent;
-        if ($total) {
-            $percent = 100 * $size / $total;
-        } else {
-            $percent = undef;
-        }
-
-        if ($total) {
-            $counter = int($max_width * $size / $total);
-            $self->_print( "\r" . sprintf("% 2.2f%% ", $percent) );
-            $self->_print('[' . ('#' x $counter) . ('-' x ($max_width - $counter)) . ']');
-            if (!$worker_thread->is_running && $size < $total) {
-                $self->_print("\n");
-                $worker_thread->join if $worker_thread->is_joinable;
-                croak("failed to fetch '$url'. worker thread exited unexpectedly!");
-            }
-        } else {
-            $self->_print( "\r --.--% " );
-            $self->_print('[' . ('-' x $counter) . '#' . ('-' x ($max_width - $counter)) . ']');
-            $counter = 1 if ++$counter > $max_width;
-        }
-
-        my $duration = time - $start;
-        $self->_print(
-            sprintf(
-                "%6dKB %3.2fKBs %4.2fs",
-                ($size / 1024),
-                ($size / 1024 / $duration),
-                $duration,
-            )
-        );
-        last if ( ($total && $size >= $total) || !$worker_thread->is_running );
+        $self->_print( $self->_make_progressbar($start, $size, $total, $counter, $max_width) );
         sleep($refresh_rate);
+        $self->_print("\r");
+        $counter = 1 if ++$counter > $max_width;
+
+        my $is_running = $worker_thread->is_running;
+        $size = -s $file;
+        if (($size < $total) && !$is_running) {
+            $self->_print("\n");
+            $worker_thread->join if $worker_thread->is_joinable;
+            croak("failed to fetch '$url'. worker thread exited unexpectedly!");
+        } elsif ( ($total && $size >= $total) || !$is_running ) {
+            $self->_print( $self->_make_progressbar($start, $size, $total, $counter, $max_width) );
+            last;
+        }
     }
     $worker_thread->join if $worker_thread->is_joinable;
     $self->_print("\nfetched '$url' to '$file'\n");
