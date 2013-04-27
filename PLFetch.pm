@@ -1,8 +1,16 @@
 #!/usr/bin/env perl
 
-package PLFetch;
+#The MIT License (MIT)
+#Copyright (c) 2013 Farzad Ghanei
+#
+#Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+#
+#The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+#
+#THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#package PLFetch;
 
-my $VERSION = "0.1.5";
+my $VERSION = "0.1.6";
 
 use strict;
 use warnings;
@@ -186,27 +194,24 @@ sub fetch {
     my $worker_thread = threads->create( sub { $self->_fetch($url, $file) } );
     my $refresh_rate = $self->{refresh_rate} // 0.5;
     my $start = time;
-    my $max_width = 20;
-
-    # initialization
-    my $counter = 1;
-    while (!-e $file || !-s $file) {
-        $self->_print('starting ' . '.' x $counter . '~' . '.' x (10 - $counter));
-        $counter = 1 if ++$counter > 10;
-        sleep($refresh_rate / 10);
-        $self->_print("\r");
-        sleep($refresh_rate / 10);
-        if (time - $start > 60) {
-            $worker_thread->join if $worker_thread->is_joinable;
-            croak("failed to start fetching '$url'");
-        }
-    }
+    my $max_width = 30;
+    my $last_size_check = time;
 
     # progress
-    $counter = 1;
+    my $counter = 1;
     my $total = $info->{size} // 0;
     while (1) {
-        my $size = -s $file // 0;
+        my $size = 0;
+        if (!-f $file || !-s $file) {
+            $self->_print("\rstarting ...");
+            if (time - $last_size_check > 60) {
+                croak("failed to fetch '$url'. timedout!");
+            }
+            next;
+        } else {
+            $last_size_check = time;
+            $size = -s $file // 0;
+        }
         my $percent;
         if ($total) {
             $percent = 100 * $size / $total;
@@ -214,29 +219,31 @@ sub fetch {
             $percent = undef;
         }
 
-        $self->_print(
-            sprintf(
-                "\r[elapsed % 4.2f - %5dKB] %s",
-                (time - $start),
-                ($size / 1024),
-                ($percent ? sprintf("% 2.2f%% ", $percent) : ''),
-            )
-        );
-
         if ($total) {
-            $counter = int($size / $total) * $max_width;
-            $self->_print('[' . ('|' x $counter) . ('-' x ($max_width - $counter)) . ']');
-            last if ( $size >= $total);
-            if (!$worker_thread->is_running) {
+            $counter = int($max_width * $size / $total);
+            $self->_print( "\r" . sprintf("% 2.2f%% ", $percent) );
+            $self->_print('[' . ('#' x $counter) . ('-' x ($max_width - $counter)) . ']');
+            if (!$worker_thread->is_running && $size < $total) {
+                $self->_print("\n");
                 $worker_thread->join if $worker_thread->is_joinable;
                 croak("failed to fetch '$url'. worker thread exited unexpectedly!");
             }
-        } elsif (!$worker_thread->is_running) {
-            last;
         } else {
-            $self->_print('[' . ('-' x $counter) . '=' . ('-' x ($max_width - $counter)) . ']');
+            $self->_print( "\r --.--% " );
+            $self->_print('[' . ('-' x $counter) . '#' . ('-' x ($max_width - $counter)) . ']');
             $counter = 1 if ++$counter > $max_width;
         }
+
+        my $duration = time - $start;
+        $self->_print(
+            sprintf(
+                "%6dKB %3.2fKBs %4.2fs",
+                ($size / 1024),
+                ($size / 1024 / $duration),
+                $duration,
+            )
+        );
+        last if ( ($total && $size >= $total) || !$worker_thread->is_running );
         sleep($refresh_rate);
     }
     $worker_thread->join if $worker_thread->is_joinable;
