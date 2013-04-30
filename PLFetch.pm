@@ -231,9 +231,7 @@ sub fetch {
     my ($self, $url, $file) = @_;
     confess("no URL specified!") if !$url;
     my $info = $self->_url_info($url);
-    if (!$file) {
-        $file = $info->{filename} // $self->_filename_from_url($url);
-    }
+    $file ||= $info->{filename} // $self->_filename_from_url($url);
     $file = $self->_make_local_filename($file);
 
     $self->_debug('starting worker thread ...');
@@ -452,7 +450,7 @@ sub run {
 
     my $total = scalar @args;
     if (!$total) {
-        print STDERR "please specify a URL. use -h or --help for more info";
+        print STDERR "please specify a URL. use -h or --help for more info\n";
         exit(65);
     }
 
@@ -461,18 +459,17 @@ sub run {
     $fetcher->{quiet} = $quiet if $quiet;
     $fetcher->{debug} = $debug if $debug;
     $fetcher->{parallel} = $parallel if $parallel > 0;
+    if ($output) {
+        if (-d $output) {
+            $fetcher->{path} = $output;
+        } else {
+            $output = basename($output) || undef;
+        }
+    }
 
     if ($total == 1) {
-        if ($output && -d $output) {
-            $fetcher->{path} = $output;
-            $output = undef;
-        }
         $fetcher->fetch($args[0], $output);
     } else {
-        if ($output) {
-            $output = dirname($output) if !-d $output;
-            $fetcher->{path} = $output;
-        }
         $fetcher->fetchAll(@args);
     }
     return 0;
