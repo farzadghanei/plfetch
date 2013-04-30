@@ -278,7 +278,7 @@ sub fetch {
             croak("failed to fetch '$url'. worker thread exited unexpectedly!");
         } elsif ( ($total && $size >= $total) || !$is_running ) {
             if ($self->_is_on_tty) {
-                $self->_print( $self->_make_progressbar($start, $size, $total, $counter, $max_width) );
+                $self->_print( $self->_progressbar($start, $size, $total, $counter, $max_width) );
             }
             last;
         }
@@ -460,7 +460,7 @@ sub run {
     my $fetcher = $class->new;
     $fetcher->{quiet} = $quiet if $quiet;
     $fetcher->{debug} = $debug if $debug;
-    $fetcher->{parallel} = $parallel if $parallel > 1;
+    $fetcher->{parallel} = $parallel if $parallel > 0;
 
     if ($total == 1) {
         if ($output && -d $output) {
@@ -469,8 +469,9 @@ sub run {
         }
         $fetcher->fetch($args[0], $output);
     } else {
-        if ($output && !-d $output) {
-            $fetcher->{path} = dirname($output);
+        if ($output) {
+            $output = dirname($output) if !-d $output;
+            $fetcher->{path} = $output;
         }
         $fetcher->fetchAll(@args);
     }
