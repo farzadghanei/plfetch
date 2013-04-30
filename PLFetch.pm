@@ -34,14 +34,7 @@ sub new {
         url_info_cache => {},
         refresh_rate => 0.5,
     };
-    $self->{queu} = qw();
     bless $self, $class;
-    return $self;
-}
-
-sub add_url {
-    my ($self, @url) = @_;
-    push $self->queue, @url;
     return $self;
 }
 
@@ -349,7 +342,7 @@ sub fetchAll {
             my $total = $i->{total};
 
             if (!-f $file || !($size = -s $file)) {
-                $self->_debug("local file '$file' does not exist! why?");
+                $self->_debug("local file '$file' does not exist!");
                 if ($i->{last_size_check} && time - $i->{last_size_check} > 60) {
                     $errors->{$_} = "failed to fetch '$_'. timedout!";
                     $self->_debug("failed to fetch '$_'. timedout!");
@@ -380,16 +373,19 @@ sub fetchAll {
         } # foreach (keys %running ...
 
         if ($self->_is_on_tty) {
-            $self->_clear_output_line;
-            $self->_print(
-                sprintf('[%.2fs] total: %d - active: %d - finished: %d - errors: %d',
+            my $progress = sprintf('[%.2fs] total: %d - active: %d - finished: %d - errors: %d',
                     time - $start,
                     scalar $num_all,
                     scalar keys %$running,
                     scalar keys %$finished,
                     scalar keys %$errors,
-                )
-            );
+                );
+            $self->_clear_output_line;
+            if ($self->{debug}) {
+                $self->_debug($progress);
+            } else {
+                $self->_print($progress);
+            }
         }
 
         last if ( $num_all <= ((scalar keys %$finished) + (scalar keys %$errors)) );
