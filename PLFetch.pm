@@ -11,10 +11,11 @@
 
 package PLFetch;
 
-my $VERSION = "0.1.7";
+my $VERSION = "0.2.0";
 
 use strict;
 use warnings;
+use List::Util qw(min);
 use Carp;
 use File::Basename;
 use File::Spec;
@@ -47,6 +48,7 @@ sub add_url {
 sub _debug {
     my ($self, @msg) = @_;
     if ($self->{debug}) {
+        $self->_clear_output_line;
         $self->_print(@msg);
         $self->_print("\n");
     }
@@ -232,28 +234,6 @@ sub _progressbar {
     return join('', @buff);
 }
 
-sub _counting_progressbar {
-    my ($self, $start, $size, $total, $counter, $max_width) = @_;
-    $start //= 0;
-    $size //= 0;
-    $total //= 0;
-    $counter //= 0;
-    $max_width //= 30;
-    my @buff;
-    if ($total) {
-        my $ratio = $size / $total;
-        $counter = int($max_width * $ratio);
-        push @buff, sprintf('% 3d/%d ', $size, $total);
-        push @buff, ('[' . ('#' x $counter) . ('-' x ($max_width - $counter)) . ']');
-    } else {
-        push @buff, ( '--.--% ' );
-        push @buff, ('[' . ('-' x $counter) . '#' . ('-' x ($max_width - $counter)) . ']');
-    }
-
-    push @buff, sprintf(" %4.2fs", time - $start);
-    return join('', @buff);
-}
-
 sub fetch {
     my ($self, $url, $file) = @_;
     confess("no URL specified!") if !$url;
@@ -292,7 +272,7 @@ sub fetch {
         sleep($refresh_rate);
 
         if ($self->_is_on_tty) {
-            $self->_clear_output_line();
+            $self->_clear_output_line;
         }
 
         $counter = 1 if ++$counter > $max_width;
@@ -321,112 +301,117 @@ sub fetchAll {
 
     my $refresh_rate = $self->{refresh_rate} // 0.5;
     my $max_width = 30;
-    my $qsize = $self->{parallel} // scalar @urls;
 
     my $threads = {};
     my $errors = {};
-    my @finished;
-    my @running;
-
+    my $finished = {};
+    my $running = {};
     my $info = {};
+
+    # making sure for unique URLs and fast access to all
+    my $all = {};
     foreach (@urls) {
-        my $i = $self->_url_info($_);
-        if (!$i->{filename}) {
-            $i->{filename} = $self->_filename_from_url($_);
-        }
-        my $filename = $i->{filename};
-        $i->{localfile} = $self->_make_local_filename($filename);
-        $info->{$_} = $i;
-        $info->{$_}->{total} = $i->{total} // 0;
-        $info->{$_}->{size} = 0;
-        $info->{$_}->{display} = length($filename) < ($max_width - 10) ? $filename : substr($filename, 0, $max_width - 10) . '...';
+        $all->{$_} = 1;
     }
+    my @todo = keys %$all;
+    my $num_all = scalar @todo;
 
-    foreach (@urls) {
-        $self->_debug("starting worker thread to fetch '$_'");
-        $threads->{$_} = threads->create( sub { $self->_fetch($_, $info->{$_}->{localfile}) } );
-        $self->_debug("started thread '$threads->{$_}' to fetch '$_'");
-        $info->{$_}->{start} = time;
-        $info->{$_}->{last_size_check} = time;
-    }
-
-
-    # progress
-    my $counter = 1;
+    my $qsize = min($self->{parallel}, $num_all);
+    my $start = time;
     while (1) {
-        foreach (@urls) {
-            next if exists $errors->{$_} or exists $finished->{$_};
-            my $i = $info->{$_};
-            my $file = $i->{localfile};
-            if (!-f $file || !-s $file) {
-                if (time - $i->{last_size_check} > 60) {
-                    my $msg = "failed to fetch '$i->{display}'. timedout!";
-                    $errors->{$_} = $msg;
-                }
-            } else {
-                $info->{$_}->{last_size_check} = time;
-                $info->{$_}->{size} = -s $file // 0;
-            }
+        while (scalar @todo && $qsize > scalar keys %$running) {
+            my $url = shift @todo;
+            $self->_debug("adding '$url' to running queue");
+            $info->{$url} = $self->_url_info($url);
+            $info->{$url}->{total} //= 0;
+            $info->{$url}->{filename} //= $self->_filename_from_url($url);
+            my $filename = $info->{$url}->{filename};
+            $info->{$url}->{localfile} = $self->_make_local_filename($filename);
+            $info->{$url}->{size} = 0;
+
+            $threads->{$url} = threads->create( sub { $self->_fetch($url, $info->{$url}->{localfile}) } );
+            $info->{$url}->{start} = time;
+            $info->{$url}->{first_size_check} = undef;
+            $info->{$url}->{last_size_check} = undef;
+            $running->{$url} = time;
         }
 
-        foreach (@urls) {
-            my $i = $info->{$_};
-            $self->_print($i->{display} . "\n");
-            if (exists $errors->{$_}) {
-                $self->_print($errors->{$_});
-            }
-            elsif (exists $finished->{$_}) {
-                my $fake_start = $i->{start} + (time - $finished->{$_});
-                $self->_print( $self->_make_progressbar($fake_start, $i->{size}, $i->{total}, $max_width, $max_width) );
-            }
-            else {
-                $self->_print( $self->_make_progressbar($i->{start}, $i->{size}, $i->{total}, $counter, $max_width) );
-            }
-            $self->_print("\n");
-        }
-
-        sleep($refresh_rate);
-
-        $self->_clear_output_lines(2 * (scalar @urls));
-        $counter = 1 if ++$counter > $max_width;
-
-        foreach (@urls) {
-            next if (exists $errors->{$_} or exists $finished->{$_});
-            my $i = $info->{$_};
-            my $file = $i->{localfile};
-            if (!-f $file) {
-                $errors->{$_} = "local file '$file' is missing. fetching '$i->{display}' failed!";
+        foreach (keys %$running) {
+            $self->_debug("checking running task: '$_' ...");
+            if (exists $errors->{$_} or exists $finished->{$_}) {
+                $self->_debug("'$_' is still in running queue but should not. weird!");
+                delete $running->{$_};
                 next;
             }
-            my $size = -s $file // 0;
-            $info->{$_}->{size} = $size;
+            my $i = $info->{$_};
+            my $file = $i->{localfile};
+            my $size;
             my $total = $i->{total};
-            my $worker_thread = $threads->{$_};
-            my $is_running = $worker_thread->is_running;
-            if (($size < $total) && !$is_running) {
-                $worker_thread->join if $worker_thread->is_joinable;
-                $errors->{$_} = "failed to fetch '$i->{display}'. worker thread exited unexpectedly!";
-            } elsif ( ($total && $size >= $total) || !$is_running ) {
-                $finished->{$_} = time;
-            }
-        }
-        last if (scalar keys %$finished >= scalar @urls);
-    } # while (1)
 
-    foreach (keys $errors) {
+            if (!-f $file || !($size = -s $file)) {
+                $self->_debug("local file '$file' does not exist! why?");
+                if ($i->{last_size_check} && time - $i->{last_size_check} > 60) {
+                    $errors->{$_} = "failed to fetch '$_'. timedout!";
+                    $self->_debug("failed to fetch '$_'. timedout!");
+                    delete $running->{$_};
+                } elsif ($i->{first_size_check} && $i->{size} < $i->{total}) {
+                    $errors->{$_} = "failed to fetch '$_'. local file '$file' is missing!";
+                    $self->_debug("failed to fetch '$_'. local file '$file' is missing!");
+                    delete $running->{$_};
+                }
+                next;
+            }
+
+            $info->{$_}->{first_size_check} //= time;
+            $info->{$_}->{last_size_check} = time;
+            $info->{$_}->{size} = $size // 0;
+
+            my $th = $threads->{$_};
+            my $is_running = $th->is_running;
+            if (($size < $total) && !$is_running) {
+                $errors->{$_} = "failed to fetch '$_'. worker thread exited unexpectedly!";
+                $self->_debug("failed to fetch '$_'. worker thread exited unexpectedly!");
+                delete $running->{$_};
+            } elsif ( ($total && $size >= $total) || !$is_running ) {
+                $self->_debug("fetchign '$_' is finished!");
+                $finished->{$_} = time;
+                delete $running->{$_};
+            }
+        } # foreach (keys %running ...
+
+        if ($self->_is_on_tty) {
+            $self->_clear_output_line;
+            $self->_print(
+                sprintf('[%.2fs] total: %d - active: %d - finished: %d - errors: %d',
+                    time - $start,
+                    scalar $num_all,
+                    scalar keys %$running,
+                    scalar keys %$finished,
+                    scalar keys %$errors,
+                )
+            );
+        }
+
+        last if ( $num_all <= ((scalar keys %$finished) + (scalar keys %$errors)) );
+        sleep($refresh_rate);
+    } # while
+
+    foreach (keys %$all) {
+        my $th = $threads->{$_} || undef;
+        if ($th) {
+            $self->_debug("joining thread '$th' responsible for '$_'.");
+            $th->join if $th->is_joinable;
+        }
+    }
+
+    $self->_print("\n") if $self->_is_on_tty;
+    foreach (keys %$errors) {
         $self->_print("failed to fetch '$_': " . $errors->{$_} . "\n");
     }
 
-    foreach (keys $finished) {
+    foreach (keys %$finished) {
         $self->_print("fetched '$_' to '" . $info->{$_}->{localfile} . "'\n");
     }
-
-    foreach (keys $threads) {
-        my $worker_thread = $threads->{$_};
-        $self->_debug("joining thread '$worker_thread' responsible for '$_'.");
-        $worker_thread->join if $worker_thread->is_joinable;
-    }
-
     return [$finished, $errors];
 }
 
