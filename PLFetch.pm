@@ -462,8 +462,11 @@ sub run {
     if ($output) {
         if (-d $output) {
             $fetcher->{path} = $output;
+            $output = undef;
         } else {
+            my $output_dir = dirname($output) || undef;
             $output = basename($output) || undef;
+            $fetcher->{path} = $output_dir;
         }
     }
 
